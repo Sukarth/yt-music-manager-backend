@@ -1,6 +1,7 @@
 const express = require('express');
 const cors = require('cors');
 const ytdl = require('ytdl-core');
+const ytpl = require('ytpl');
 require('dotenv').config();
 
 const app = express();
@@ -15,8 +16,87 @@ app.get('/', (req, res) => {
   res.json({ 
     status: 'online', 
     service: 'YT Music Backend',
-    version: '1.0.0'
+    version: '1.1.0'
   });
+});
+
+app.get('/health', (req, res) => {
+  res.json({ status: 'healthy' });
+});
+
+// Get playlist info
+app.get('/api/playlist-info', async (req, res) => {
+  try {
+    const { playlistId } = req.query;
+    
+    if (!playlistId) {
+      return res.status(400).json({ error: 'playlistId parameter is required' });
+    }
+
+    // Validate playlist ID
+    if (!ytpl.validateID(playlistId)) {
+      return res.status(400).json({ error: 'Invalid playlist ID' });
+    }
+
+    // Get playlist info (limit to 1 item just to get metadata)
+    const playlist = await ytpl(playlistId, { limit: 1 });
+
+    res.json({
+      id: playlist.id,
+      title: playlist.title,
+      description: playlist.description || '',
+      thumbnailUrl: playlist.bestThumbnail?.url || '',
+      itemCount: playlist.estimatedItemCount || playlist.items.length
+    });
+
+  } catch (error) {
+    console.error('Error fetching playlist info:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch playlist info',
+      message: error.message 
+    });
+  }
+});
+
+// Get playlist videos
+app.get('/api/playlist-videos', async (req, res) => {
+  try {
+    const { playlistId } = req.query;
+    
+    if (!playlistId) {
+      return res.status(400).json({ error: 'playlistId parameter is required' });
+    }
+
+    // Validate playlist ID
+    if (!ytpl.validateID(playlistId)) {
+      return res.status(400).json({ error: 'Invalid playlist ID' });
+    }
+
+    // Get full playlist with all items
+    const playlist = await ytpl(playlistId, { limit: Infinity });
+
+    const videos = playlist.items.map(item => ({
+      id: item.id,
+      title: item.title,
+      author: item.author?.name || 'Unknown',
+      duration: item.durationSec || 0,
+      thumbnailUrl: item.bestThumbnail?.url || item.thumbnails?.[0]?.url || ''
+    }));
+
+    res.json({
+      playlistId: playlist.id,
+      title: playlist.title,
+      itemCount: videos.length,
+      videos
+    });
+
+  } catch (error) {
+    console.error('Error fetching playlist videos:', error);
+    res.status(500).json({ 
+      error: 'Failed to fetch playlist videos',
+      message: error.message 
+    });
+  }
 });
 
 // Get download info for a video
@@ -43,7 +123,7 @@ app.get('/api/download-info', async (req, res) => {
     
     // Find best audio quality
     const bestAudio = audioFormats.reduce((best, format) => {
-      if (! best || (format.audioBitrate && format.audioBitrate > best.audioBitrate)) {
+      if (!best || (format.audioBitrate && format.audioBitrate > best.audioBitrate)) {
         return format;
       }
       return best;
@@ -52,11 +132,11 @@ app.get('/api/download-info', async (req, res) => {
     res.json({
       videoId: videoId,
       title: info.videoDetails.title,
-      author: info.videoDetails.author. name,
-      lengthSeconds: info.videoDetails. lengthSeconds,
-      downloadUrl: bestAudio?. url || null,
+      author: info.videoDetails.author.name,
+      lengthSeconds: info.videoDetails.lengthSeconds,
+      downloadUrl: bestAudio?.url || null,
       quality: bestAudio?.audioBitrate || 'unknown',
-      format: bestAudio?.mimeType?. split(';')[0] || 'audio/webm'
+      format: bestAudio?.mimeType?.split(';')[0] || 'audio/webm'
     });
 
   } catch (error) {
@@ -85,7 +165,7 @@ app.get('/api/download', async (req, res) => {
 
     // Get video info first to set proper headers
     const info = await ytdl.getInfo(videoUrl);
-    const title = info.videoDetails.title. replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    const title = info.videoDetails.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
 
     // Set headers for download
     res.setHeader('Content-Disposition', `attachment; filename="${title}.mp3"`);
@@ -101,7 +181,7 @@ app.get('/api/download', async (req, res) => {
 
     audioStream.on('error', (error) => {
       console.error('Stream error:', error);
-      if (! res.headersSent) {
+      if (!res.headersSent) {
         res.status(500).json({ error: 'Download failed' });
       }
     });
