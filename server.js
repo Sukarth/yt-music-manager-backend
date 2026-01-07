@@ -68,7 +68,7 @@ app.get('/api/user-playlists', async (req, res) => {
 
     // Fetch user's playlists
     const response = await youtube.playlists.list({
-      part: ['snippet', 'contentDetails'],
+      part: ['snippet', 'contentDetails', 'status'],
       mine: true,
       maxResults: 50
     });
@@ -143,7 +143,7 @@ app.get('/api/playlist-info', async (req, res) => {
 
         try {
           const response = await youtube.playlists.list({
-            part: ['snippet', 'contentDetails'],
+            part: ['snippet', 'contentDetails', 'status'],
             id: [playlistId]
           });
 
@@ -155,6 +155,7 @@ app.get('/api/playlist-info', async (req, res) => {
               description: playlist.snippet.description || '',
               thumbnailUrl: playlist.snippet.thumbnails?.medium?.url || playlist.snippet.thumbnails?.default?.url || '',
               itemCount: playlist.contentDetails.itemCount,
+              privacy: playlist.status?.privacyStatus || 'private',
               source: 'youtube-api'
             });
           }
