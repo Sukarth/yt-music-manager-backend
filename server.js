@@ -12,11 +12,19 @@ const PORT = process.env.PORT || 3000;
 let ytDlpPath = 'yt-dlp';
 try {
   // Check if yt-dlp is available in system
-  execSync('which yt-dlp', { stdio: 'ignore' });
-  console.log('✅ Using system yt-dlp');
+  const foundPath = execSync('which yt-dlp').toString().trim();
+  console.log(`✅ Using system yt-dlp found at: ${foundPath}`);
+  ytDlpPath = foundPath;
 } catch (e) {
-  console.log('ℹ️ System yt-dlp not found, will use bundled version');
-  ytDlpPath = undefined;
+  console.log('ℹ️ System yt-dlp not found via which, checking version...');
+  try {
+    execSync('yt-dlp --version');
+    console.log('✅ yt-dlp is accessible in PATH');
+    ytDlpPath = 'yt-dlp';
+  } catch (e2) {
+    console.log('ℹ️ yt-dlp not found in PATH, will use bundled version if possible');
+    ytDlpPath = undefined;
+  }
 }
 
 const ytDlp = new YTDlpWrap(ytDlpPath);
@@ -208,7 +216,8 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  console.log(`📍 Binding: 0.0.0.0`);
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
 });
