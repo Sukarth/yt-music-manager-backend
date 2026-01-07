@@ -2,8 +2,12 @@ services:
   - type: web
     name: yt-music-manager-backend
     env: node
-    buildCommand: npm install
+    buildCommand: |
+      pip install -U yt-dlp
+      npm install
     startCommand: npm start
     envVars:
-      - key:  NODE_ENV
+      - key: NODE_ENV
         value: production
+      - key: YTDL_PATH
+        value: yt-dlp

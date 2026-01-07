@@ -2,13 +2,24 @@ const express = require('express');
 const cors = require('cors');
 const YTDlpWrap = require('yt-dlp-wrap').default;
 const { spawn } = require('child_process');
+const { execSync } = require('child_process');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// Initialize yt-dlp (will auto-download binary if needed)
-const ytDlp = new YTDlpWrap();
+// Use system yt-dlp if available, otherwise use bundled one
+let ytDlpPath = 'yt-dlp';
+try {
+  // Check if yt-dlp is available in system
+  execSync('which yt-dlp', { stdio: 'ignore' });
+  console.log('✅ Using system yt-dlp');
+} catch (e) {
+  console.log('ℹ️ System yt-dlp not found, will use bundled version');
+  ytDlpPath = undefined;
+}
+
+const ytDlp = new YTDlpWrap(ytDlpPath);
 
 // Middleware
 app.use(cors());
@@ -197,15 +208,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
-app.listen(PORT, async () => {
+app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
-  
-  // Download yt-dlp binary if not present
-  try {
-    await ytDlp.downloadYTDlp();
-    console.log('✅ yt-dlp ready');
-  } catch (error) {
-    console.log('ℹ️ yt-dlp already installed or download failed');
-  }
 });
