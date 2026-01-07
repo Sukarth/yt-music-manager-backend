@@ -1,11 +1,14 @@
 const express = require('express');
 const cors = require('cors');
-const ytdl = require('ytdl-core');
-const ytpl = require('ytpl');
+const YTDlpWrap = require('yt-dlp-wrap').default;
+const { spawn } = require('child_process');
 require('dotenv').config();
 
 const app = express();
 const PORT = process.env.PORT || 3000;
+
+// Initialize yt-dlp (will auto-download binary if needed)
+const ytDlp = new YTDlpWrap();
 
 // Middleware
 app.use(cors());
@@ -33,20 +36,20 @@ app.get('/api/playlist-info', async (req, res) => {
       return res.status(400).json({ error: 'playlistId parameter is required' });
     }
 
-    // Validate playlist ID
-    if (!ytpl.validateID(playlistId)) {
-      return res.status(400).json({ error: 'Invalid playlist ID' });
-    }
+    const playlistUrl = `https://www.youtube.com/playlist?list=${playlistId}`;
 
-    // Get playlist info (limit to 1 item just to get metadata)
-    const playlist = await ytpl(playlistId, { limit: 1 });
+    // Get playlist info using yt-dlp (works with public and unlisted playlists)
+    const metadata = await ytDlp.getVideoInfo([playlistUrl, '--flat-playlist', '--dump-json']);
+    
+    // Parse the JSON output
+    const playlistData = typeof metadata === 'string' ? JSON.parse(metadata.split('\n')[0]) : metadata;
 
     res.json({
-      id: playlist.id,
-      title: playlist.title,
-      description: playlist.description || '',
-      thumbnailUrl: playlist.bestThumbnail?.url || '',
-      itemCount: playlist.estimatedItemCount || playlist.items.length
+      id: playlistId,
+      title: playlistData.title || 'Unknown Playlist',
+      description: playlistData.description || '',
+      thumbnailUrl: playlistData.thumbnail || '',
+      itemCount: playlistData.playlist_count || 0
     });
 
   } catch (error) {
@@ -67,25 +70,33 @@ app.get('/api/playlist-videos', async (req, res) => {
       return res.status(400).json({ error: 'playlistId parameter is required' });
     }
 
-    // Validate playlist ID
-    if (!ytpl.validateID(playlistId)) {
-      return res.status(400).json({ error: 'Invalid playlist ID' });
-    }
+    const playlistUrl = `https://www.youtube.com/playlist?list=${playlistId}`;
 
-    // Get full playlist with all items
-    const playlist = await ytpl(playlistId, { limit: Infinity });
-
-    const videos = playlist.items.map(item => ({
-      id: item.id,
-      title: item.title,
-      author: item.author?.name || 'Unknown',
-      duration: item.durationSec || 0,
-      thumbnailUrl: item.bestThumbnail?.url || item.thumbnails?.[0]?.url || ''
-    }));
+    // Get full playlist with all videos using yt-dlp
+    const metadata = await ytDlp.getVideoInfo([playlistUrl, '--flat-playlist', '--dump-json']);
+    
+    // yt-dlp returns one JSON per line for each video
+    const lines = metadata.split('\n').filter(line => line.trim());
+    
+    const videos = lines.slice(1).map(line => {
+      try {
+        const video = JSON.parse(line);
+        return {
+          id: video.id,
+          title: video.title || 'Unknown',
+          author: video.uploader || video.channel || 'Unknown',
+          duration: video.duration || 0,
+          thumbnailUrl: video.thumbnail || ''
+        };
+      } catch (e) {
+        console.error('Failed to parse video line:', e);
+        return null;
+      }
+    }).filter(v => v !== null);
 
     res.json({
-      playlistId: playlist.id,
-      title: playlist.title,
+      playlistId: playlistId,
+      title: '',
       itemCount: videos.length,
       videos
     });
@@ -109,34 +120,19 @@ app.get('/api/download-info', async (req, res) => {
     }
 
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-    
-    // Validate video URL
-    if (!ytdl.validateURL(videoUrl)) {
-      return res.status(400).json({ error: 'Invalid YouTube video ID' });
-    }
 
-    // Get video info
-    const info = await ytdl.getInfo(videoUrl);
-    
-    // Get audio formats
-    const audioFormats = ytdl.filterFormats(info.formats, 'audioonly');
-    
-    // Find best audio quality
-    const bestAudio = audioFormats.reduce((best, format) => {
-      if (!best || (format.audioBitrate && format.audioBitrate > best.audioBitrate)) {
-        return format;
-      }
-      return best;
-    }, null);
+    // Get video info using yt-dlp
+    const metadata = await ytDlp.getVideoInfo([videoUrl, '--dump-json']);
+    const info = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
 
     res.json({
       videoId: videoId,
-      title: info.videoDetails.title,
-      author: info.videoDetails.author.name,
-      lengthSeconds: info.videoDetails.lengthSeconds,
-      downloadUrl: bestAudio?.url || null,
-      quality: bestAudio?.audioBitrate || 'unknown',
-      format: bestAudio?.mimeType?.split(';')[0] || 'audio/webm'
+      title: info.title,
+      author: info.uploader || info.channel || 'Unknown',
+      lengthSeconds: info.duration || 0,
+      downloadUrl: videoUrl, // yt-dlp will handle the actual download
+      quality: 'best',
+      format: 'audio/mp4'
     });
 
   } catch (error) {
@@ -151,35 +147,33 @@ app.get('/api/download-info', async (req, res) => {
 // Get direct download stream
 app.get('/api/download', async (req, res) => {
   try {
-    const { videoId, quality } = req.query;
+    const { videoId } = req.query;
     
     if (!videoId) {
       return res.status(400).json({ error: 'videoId parameter is required' });
     }
 
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
-    
-    if (!ytdl.validateURL(videoUrl)) {
-      return res.status(400).json({ error: 'Invalid YouTube video ID' });
-    }
 
-    // Get video info first to set proper headers
-    const info = await ytdl.getInfo(videoUrl);
-    const title = info.videoDetails.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
+    // Get video info for title
+    const metadata = await ytDlp.getVideoInfo([videoUrl, '--dump-json']);
+    const info = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
+    const title = info.title.replace(/[^a-z0-9]/gi, '_').toLowerCase();
 
     // Set headers for download
-    res.setHeader('Content-Disposition', `attachment; filename="${title}.mp3"`);
-    res.setHeader('Content-Type', 'audio/mpeg');
+    res.setHeader('Content-Disposition', `attachment; filename="${title}.m4a"`);
+    res.setHeader('Content-Type', 'audio/mp4');
 
-    // Stream the audio
-    const audioStream = ytdl(videoUrl, {
-      quality: 'highestaudio',
-      filter: 'audioonly'
-    });
+    // Stream audio using yt-dlp
+    const stream = ytDlp.execStream([
+      videoUrl,
+      '-f', 'bestaudio',
+      '-o', '-' // Output to stdout
+    ]);
 
-    audioStream.pipe(res);
+    stream.pipe(res);
 
-    audioStream.on('error', (error) => {
+    stream.on('error', (error) => {
       console.error('Stream error:', error);
       if (!res.headersSent) {
         res.status(500).json({ error: 'Download failed' });
@@ -203,7 +197,15 @@ app.use((err, req, res, next) => {
   res.status(500).json({ error: 'Something went wrong!' });
 });
 
-app.listen(PORT, () => {
+app.listen(PORT, async () => {
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`📍 Environment: ${process.env.NODE_ENV || 'development'}`);
+  
+  // Download yt-dlp binary if not present
+  try {
+    await ytDlp.downloadYTDlp();
+    console.log('✅ yt-dlp ready');
+  } catch (error) {
+    console.log('ℹ️ yt-dlp already installed or download failed');
+  }
 });
