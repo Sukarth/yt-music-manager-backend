@@ -58,17 +58,18 @@ app.get('/api/playlist-info', async (req, res) => {
     const playlistUrl = `https://www.youtube.com/playlist?list=${playlistId}`;
 
     // Get playlist info using yt-dlp (works with public and unlisted playlists)
-    const metadata = await ytDlp.getVideoInfo([playlistUrl, '--flat-playlist', '--dump-json']);
+    // Use --dump-single-json to get a single JSON object with all metadata and entries
+    const metadata = await ytDlp.getVideoInfo([playlistUrl, '--flat-playlist', '--dump-single-json']);
     
     // Parse the JSON output
-    const playlistData = typeof metadata === 'string' ? JSON.parse(metadata.split('\n')[0]) : metadata;
+    const playlistData = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
 
     res.json({
       id: playlistId,
       title: playlistData.title || 'Unknown Playlist',
       description: playlistData.description || '',
-      thumbnailUrl: playlistData.thumbnail || '',
-      itemCount: playlistData.playlist_count || 0
+      thumbnailUrl: playlistData.thumbnails && playlistData.thumbnails.length > 0 ? playlistData.thumbnails[playlistData.thumbnails.length - 1].url : null || '',
+      itemCount: playlistData.playlist_count || (playlistData.entries ? playlistData.entries.length : 0)
     });
 
   } catch (error) {
@@ -92,30 +93,27 @@ app.get('/api/playlist-videos', async (req, res) => {
     const playlistUrl = `https://www.youtube.com/playlist?list=${playlistId}`;
 
     // Get full playlist with all videos using yt-dlp
-    const metadata = await ytDlp.getVideoInfo([playlistUrl, '--flat-playlist', '--dump-json']);
+    // Use --dump-single-json to get reliable playlist metadata and entries
+    const metadata = await ytDlp.getVideoInfo([playlistUrl, '--flat-playlist', '--dump-single-json']);
     
-    // yt-dlp returns one JSON per line for each video
-    const lines = metadata.split('\n').filter(line => line.trim());
+    const playlistData = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
+    const entries = playlistData.entries || [];
     
-    const videos = lines.slice(1).map(line => {
-      try {
-        const video = JSON.parse(line);
-        return {
-          id: video.id,
-          title: video.title || 'Unknown',
-          author: video.uploader || video.channel || 'Unknown',
-          duration: video.duration || 0,
-          thumbnailUrl: video.thumbnail || ''
-        };
-      } catch (e) {
-        console.error('Failed to parse video line:', e);
-        return null;
-      }
+    // Process entries
+    const videos = entries.map(video => {
+      if (!video) return null;
+      return {
+        id: video.id,
+        title: video.title || 'Unknown',
+        author: video.uploader || video.channel || video.uploader_id || 'Unknown',
+        duration: video.duration || 0,
+        thumbnailUrl: video.thumbnail || (video.thumbnails && video.thumbnails.length > 0 ? video.thumbnails[0].url : '') || ''
+      };
     }).filter(v => v !== null);
 
     res.json({
       playlistId: playlistId,
-      title: '',
+      title: playlistData.title || '',
       itemCount: videos.length,
       videos
     });
