@@ -35,8 +35,8 @@ app.use(express.json());
 
 // Health check endpoint
 app.get('/', (req, res) => {
-  res.json({ 
-    status: 'online', 
+  res.json({
+    status: 'online',
     service: 'YT Music Backend',
     version: '1.1.0'
   });
@@ -50,7 +50,7 @@ app.get('/health', (req, res) => {
 app.get('/api/playlist-info', async (req, res) => {
   try {
     const { playlistId } = req.query;
-    
+
     if (!playlistId) {
       return res.status(400).json({ error: 'playlistId parameter is required' });
     }
@@ -60,16 +60,27 @@ app.get('/api/playlist-info', async (req, res) => {
     // Get playlist info using yt-dlp (works with public and unlisted playlists)
     // Use --dump-single-json to get a single JSON object with all metadata and entries
     const metadata = await ytDlp.getVideoInfo([playlistUrl, '--flat-playlist', '--dump-single-json']);
-    
+
     // Parse the JSON output
-    const playlistData = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
+    const rawData = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
+    
+    // Handle case where yt-dlp returns an array (items + playlist metadata) instead of a single object
+    let playlistData = rawData;
+    let entries = [];
+    
+    if (Array.isArray(rawData)) {
+      playlistData = rawData.find(item => item._type === 'playlist') || rawData[rawData.length - 1];
+      entries = rawData.filter(item => item._type === 'url' || item._type === 'video');
+    } else {
+      entries = rawData.entries || [];
+    }
 
     res.json({
       id: playlistId,
       title: playlistData.title || 'Unknown Playlist',
       description: playlistData.description || '',
       thumbnailUrl: playlistData.thumbnails && playlistData.thumbnails.length > 0 ? playlistData.thumbnails[playlistData.thumbnails.length - 1].url : null || '',
-      itemCount: playlistData.playlist_count || (playlistData.entries ? playlistData.entries.length : 0)
+      itemCount: playlistData.playlist_count || entries.length || 0
     });
 
   } catch (error) {
@@ -85,7 +96,7 @@ app.get('/api/playlist-info', async (req, res) => {
 app.get('/api/playlist-videos', async (req, res) => {
   try {
     const { playlistId } = req.query;
-    
+
     if (!playlistId) {
       return res.status(400).json({ error: 'playlistId parameter is required' });
     }
@@ -95,9 +106,18 @@ app.get('/api/playlist-videos', async (req, res) => {
     // Get full playlist with all videos using yt-dlp
     // Use --dump-single-json to get reliable playlist metadata and entries
     const metadata = await ytDlp.getVideoInfo([playlistUrl, '--flat-playlist', '--dump-single-json']);
+
+    const rawData = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
+    let playlistData = rawData;
+    let entries = [];
     
-    const playlistData = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
-    const entries = playlistData.entries || [];
+    // Handle case where yt-dlp returns an array
+    if (Array.isArray(rawData)) {
+      playlistData = rawData.find(item => item._type === 'playlist') || rawData[rawData.length - 1];
+      entries = rawData.filter(item => item._type === 'url' || item._type === 'video');
+    } else {
+      entries = rawData.entries || [];
+    }
     
     // Process entries
     const videos = entries.map(video => {
@@ -120,9 +140,9 @@ app.get('/api/playlist-videos', async (req, res) => {
 
   } catch (error) {
     console.error('Error fetching playlist videos:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to fetch playlist videos',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -131,7 +151,7 @@ app.get('/api/playlist-videos', async (req, res) => {
 app.get('/api/download-info', async (req, res) => {
   try {
     const { videoId } = req.query;
-    
+
     if (!videoId) {
       return res.status(400).json({ error: 'videoId parameter is required' });
     }
@@ -154,9 +174,9 @@ app.get('/api/download-info', async (req, res) => {
 
   } catch (error) {
     console.error('Error fetching download info:', error);
-    res.status(500).json({ 
+    res.status(500).json({
       error: 'Failed to fetch download info',
-      message: error.message 
+      message: error.message
     });
   }
 });
@@ -165,7 +185,7 @@ app.get('/api/download-info', async (req, res) => {
 app.get('/api/download', async (req, res) => {
   try {
     const { videoId } = req.query;
-    
+
     if (!videoId) {
       return res.status(400).json({ error: 'videoId parameter is required' });
     }
@@ -200,9 +220,9 @@ app.get('/api/download', async (req, res) => {
   } catch (error) {
     console.error('Error downloading:', error);
     if (!res.headersSent) {
-      res.status(500).json({ 
+      res.status(500).json({
         error: 'Failed to download',
-        message: error.message 
+        message: error.message
       });
     }
   }
