@@ -58,7 +58,7 @@ function getYouTubeClient(accessToken) {
 app.get('/api/user-playlists', async (req, res) => {
   try {
     const authHeader = req.headers.authorization;
-    
+
     if (!authHeader || !authHeader.startsWith('Bearer ')) {
       return res.status(401).json({ error: 'Authorization token required' });
     }
@@ -87,7 +87,7 @@ app.get('/api/user-playlists', async (req, res) => {
   } catch (error) {
     console.error('Error fetching user playlists:', error);
     if (error.code === 401) {
-      return res.status(401).json({ 
+      return res.status(401).json({
         error: 'Invalid or expired token',
         message: 'Please sign in again'
       });
@@ -135,7 +135,7 @@ app.get('/api/playlist-info', async (req, res) => {
       });
     } catch (ytdlpError) {
       console.log('yt-dlp failed, trying YouTube API...', ytdlpError.message);
-      
+
       // If yt-dlp fails and we have OAuth token, try YouTube API (for private playlists)
       if (authHeader && authHeader.startsWith('Bearer ')) {
         const accessToken = authHeader.substring(7);
@@ -181,6 +181,7 @@ app.get('/api/playlist-info', async (req, res) => {
 app.get('/api/playlist-videos', async (req, res) => {
   try {
     const { playlistId } = req.query;
+    const authHeader = req.headers.authorization;
 
     if (!playlistId) {
       return res.status(400).json({ error: 'playlistId parameter is required' });
@@ -188,40 +189,103 @@ app.get('/api/playlist-videos', async (req, res) => {
 
     const playlistUrl = `https://www.youtube.com/playlist?list=${playlistId}`;
 
-    // Get full playlist with all videos using yt-dlp
-    // Use --dump-single-json to get reliable playlist metadata and entries
-    const metadata = await ytDlp.getVideoInfo([playlistUrl, '--flat-playlist', '--dump-single-json']);
+    try {
+      // Get full playlist with all videos using yt-dlp
+      // Use --dump-single-json to get reliable playlist metadata and entries
+      const metadata = await ytDlp.getVideoInfo([playlistUrl, '--flat-playlist', '--dump-single-json']);
 
-    const rawData = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
-    let playlistData = rawData;
-    let entries = [];
+      const rawData = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
+      let playlistData = rawData;
+      let entries = [];
 
-    // Handle case where yt-dlp returns an array
-    if (Array.isArray(rawData)) {
-      playlistData = rawData.find(item => item._type === 'playlist') || rawData[rawData.length - 1];
-      entries = rawData.filter(item => item._type === 'url' || item._type === 'video');
-    } else {
-      entries = rawData.entries || [];
+      // Handle case where yt-dlp returns an array
+      if (Array.isArray(rawData)) {
+        playlistData = rawData.find(item => item._type === 'playlist') || rawData[rawData.length - 1];
+        entries = rawData.filter(item => item._type === 'url' || item._type === 'video');
+      } else {
+        entries = rawData.entries || [];
+      }
+
+      // Process entries
+      const videos = entries.map(video => {
+        if (!video) return null;
+        return {
+          id: video.id,
+          title: video.title || 'Unknown',
+          author: video.uploader || video.channel || video.uploader_id || 'Unknown',
+          duration: video.duration || 0,
+          thumbnailUrl: video.thumbnail || (video.thumbnails && video.thumbnails.length > 0 ? video.thumbnails[0].url : '') || ''
+        };
+      }).filter(v => v !== null);
+
+      return res.json({
+        playlistId: playlistId,
+        title: playlistData.title || '',
+        itemCount: videos.length,
+        videos,
+        source: 'yt-dlp'
+      });
+
+    } catch (ytdlpError) {
+      console.log('yt-dlp failed to fetch videos, trying YouTube API...', ytdlpError.message);
+
+      // Fallback to YouTube API for private playlists
+      if (authHeader && authHeader.startsWith('Bearer ')) {
+        const accessToken = authHeader.substring(7);
+        const youtube = getYouTubeClient(accessToken);
+
+        try {
+          let videos = [];
+          let nextPageToken = null;
+          let playlistTitle = 'Private Playlist';
+
+          // First get playlist title
+          const playlistRes = await youtube.playlists.list({
+            part: ['snippet'],
+            id: [playlistId]
+          });
+
+          if (playlistRes.data.items?.length > 0) {
+            playlistTitle = playlistRes.data.items[0].snippet.title;
+          }
+
+          // Fetch all videos (handles pagination)
+          do {
+            const response = await youtube.playlistItems.list({
+              part: ['snippet', 'contentDetails'],
+              playlistId: playlistId,
+              maxResults: 50,
+              pageToken: nextPageToken
+            });
+
+            const items = response.data.items.map(item => ({
+              id: item.contentDetails.videoId,
+              title: item.snippet.title,
+              author: item.snippet.videoOwnerChannelTitle || 'Unknown',
+              duration: 0, // YouTube API doesn't give duration in playlistItems.list (requires videos.list)
+              thumbnailUrl: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url || ''
+            }));
+
+            videos = [...videos, ...items];
+            nextPageToken = response.data.nextPageToken;
+
+          } while (nextPageToken);
+
+          return res.json({
+            playlistId: playlistId,
+            title: playlistTitle,
+            itemCount: videos.length,
+            videos,
+            source: 'youtube-api'
+          });
+
+        } catch (apiError) {
+          console.error('YouTube API also failed to fetch videos:', apiError.message);
+        }
+      }
+
+      throw ytdlpError;
     }
-
-    // Process entries
-    const videos = entries.map(video => {
-      if (!video) return null;
-      return {
-        id: video.id,
-        title: video.title || 'Unknown',
-        author: video.uploader || video.channel || video.uploader_id || 'Unknown',
-        duration: video.duration || 0,
-        thumbnailUrl: video.thumbnail || (video.thumbnails && video.thumbnails.length > 0 ? video.thumbnails[0].url : '') || ''
-      };
-    }).filter(v => v !== null);
-
-    res.json({
-      playlistId: playlistId,
-      title: playlistData.title || '',
-      itemCount: videos.length,
-      videos
-    });
 
   } catch (error) {
     console.error('Error fetching playlist videos:', error);
@@ -236,6 +300,7 @@ app.get('/api/playlist-videos', async (req, res) => {
 app.get('/api/download-info', async (req, res) => {
   try {
     const { videoId } = req.query;
+    const authHeader = req.headers.authorization;
 
     if (!videoId) {
       return res.status(400).json({ error: 'videoId parameter is required' });
@@ -244,8 +309,21 @@ app.get('/api/download-info', async (req, res) => {
     const videoUrl = `https://www.youtube.com/watch?v=${videoId}`;
 
     // Get video info using yt-dlp
-    const metadata = await ytDlp.getVideoInfo([videoUrl, '--dump-json']);
-    const info = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
+    let info;
+    try {
+      const metadata = await ytDlp.getVideoInfo([videoUrl, '--dump-json']);
+      info = typeof metadata === 'string' ? JSON.parse(metadata) : metadata;
+    } catch (ytdlpError) {
+      console.error(`yt-dlp failed for video ${videoId}:`, ytdlpError.message);
+
+      // If authenticated, we might be able to fallback to API for metadata, 
+      // but we can't get a download URL for a private video without cookies.
+      // So we return a 403 or specific error.
+      if (authHeader) {
+        return res.status(403).json({ error: 'Cannot download private video', videoId });
+      }
+      throw ytdlpError;
+    }
 
     res.json({
       videoId: videoId,
@@ -287,9 +365,11 @@ app.get('/api/download', async (req, res) => {
     res.setHeader('Content-Type', 'audio/mp4');
 
     // Stream audio using yt-dlp
+    // Force m4a/mp4 container to ensure compatibility and consistent streaming
     const stream = ytDlp.execStream([
       videoUrl,
-      '-f', 'bestaudio',
+      '-f', 'bestaudio[ext=m4a]/bestaudio', // Prefer m4a, fallback to best
+      '--recode-video', 'm4a', // Conver to m4a if not already
       '-o', '-' // Output to stdout
     ]);
 
